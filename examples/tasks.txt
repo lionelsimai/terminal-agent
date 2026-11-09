@@ -1,0 +1,4 @@
+echo hello
+python --version
+ehco fixed-by-self-debug
+cat notes.txt

@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "terminal-agent"
+version = "0.1.0"
+description = "Autonomous shell execution with self-debug loops — agents that operate real systems safely."
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [{name = "Lionel Sim", email = "lionel@theaicapitol.com"}]
+keywords = ["agent", "terminal", "shell", "autonomous", "terminal-bench"]
+classifiers = ["Programming Language :: Python :: 3", "License :: OSI Approved :: MIT License"]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.5"]
+
+[project.scripts]
+terminal-agent = "terminal_agent.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/lionelsimai/terminal-agent"
+Repository = "https://github.com/lionelsimai/terminal-agent"
+Issues = "https://github.com/lionelsimai/terminal-agent/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
