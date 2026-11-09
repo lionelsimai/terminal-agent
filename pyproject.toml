@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "terminal-agent"
-version = "0.1.0"
-description = "Autonomous shell execution with self-debug loops — agents that operate real systems safely."
+version = "0.1.1"
+description = "Autonomous shell execution with self-debug loops — policy-gated agent execution."
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}

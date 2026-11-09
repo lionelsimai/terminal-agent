@@ -17,6 +17,7 @@ class AuditEntry:
     duration_s: float
     attempt: int = 1
     dry_run: bool = False
+    blocked: bool = False
     timestamp: float = field(default_factory=time.time)
     stdout_preview: str = ""
     stderr_preview: str = ""

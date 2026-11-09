@@ -31,25 +31,34 @@ def build_parser() -> argparse.ArgumentParser:
     run_p.add_argument("--jail", default=None)
     run_p.add_argument("--audit-log", default=None)
     run_p.add_argument("--dry-run", action="store_true")
+    run_p.add_argument("--allow-code-exec", action="store_true",
+                       help="Allow python3 -c / script execution (arbitrary code)")
     sub.add_parser("demo", help="Run the offline demo tasks")
     return parser
 
 
 def _run_one(task: str, jail: Path, retries: int, timeout: float,
-             audit_path: str | None, dry_run: bool) -> int:
+             audit_path: str | None, dry_run: bool, allow_code_exec: bool = False) -> int:
     audit = AuditLogger(Path(audit_path) if audit_path else None)
-    executor = SandboxedExecutor(jail=jail, timeout_s=timeout, audit=audit)
+    executor = SandboxedExecutor(jail=jail, timeout_s=timeout, audit=audit,
+                                 allow_code_exec=allow_code_exec)
     outcome = SelfDebugLoop(executor, max_retries=retries).run(task, dry_run=dry_run)
     final = outcome.final
     print(f"task: {task}")
     print(f"final_command: {outcome.final_command}")
-    print(f"attempts: {outcome.attempts} success: {outcome.success}")
+    if dry_run:
+        print(f"attempts: {outcome.attempts} success: not executed (dry-run)")
+    else:
+        print(f"attempts: {outcome.attempts} success: {outcome.success}")
     if final is not None:
         if final.stdout.strip():
             print(f"stdout: {final.stdout.strip()}")
         if final.stderr.strip():
             print(f"stderr: {final.stderr.strip()}")
     print(f"audit_entries: {len(audit.entries)}")
+    if dry_run:
+        # Exit 0 means "policy-valid and would be attempted", never success.
+        return 0 if (final is not None and final.dry_run) else 1
     return 0 if outcome.success else 1
 
 
@@ -72,8 +81,13 @@ def main(argv: list[str] | None = None) -> int:
             print(f"demo: {ok}/{len(DEMO_TASKS)} tasks succeeded")
             print(json.dumps({"succeeded": ok, "total": len(DEMO_TASKS)}))
             return 0 if ok == len(DEMO_TASKS) else 1
-    jail = Path(args.jail) if args.jail else Path(tempfile.mkdtemp(prefix="ta-jail-"))
-    return _run_one(args.task, jail, args.max_retries, args.timeout, args.audit_log, args.dry_run)
+    if args.jail:
+        return _run_one(args.task, Path(args.jail), args.max_retries, args.timeout,
+                        args.audit_log, args.dry_run, args.allow_code_exec)
+    # No explicit jail: use a TemporaryDirectory so nothing leaks on disk.
+    with tempfile.TemporaryDirectory(prefix="ta-jail-") as tmp:
+        return _run_one(args.task, Path(tmp), args.max_retries, args.timeout,
+                        args.audit_log, args.dry_run, args.allow_code_exec)
 
 
 if __name__ == "__main__":

@@ -35,7 +35,10 @@ def test_allowlist_blocks_unknown(executor: SandboxedExecutor) -> None:
         executor.run("nonexistenttool --help")
 
 def test_timeout(executor: SandboxedExecutor) -> None:
-    ex = SandboxedExecutor(jail=executor.jail, timeout_s=0.2, allowlist=("python3",))
+    # allow_code_exec=True: this test exercises the timeout, and `python3 -c`
+    # is (correctly) gated behind that flag since 0.1.1.
+    ex = SandboxedExecutor(jail=executor.jail, timeout_s=0.2, allowlist=("python3",),
+                           allow_code_exec=True)
     r = ex.run("python3 -c 'import time; time.sleep(2)'")
     assert r.exit_code == 124
 
@@ -98,5 +101,10 @@ def test_cli_run_e2e(capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None
     assert "cli-works" in capsys.readouterr().out
 
 def test_cli_dry_run(capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
+    # 0.1.1: a dry run must never report success — it is labelled
+    # "not executed". Exit 0 means policy-valid only. (This assertion
+    # replaces the pre-0.1.1 expectation that enshrined the audited bug.)
     assert main(["run", "echo x", "--jail", str(tmp_path), "--dry-run"]) == 0
-    assert "success: True" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "not executed (dry-run)" in out
+    assert "success: True" not in out

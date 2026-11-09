@@ -6,7 +6,7 @@ import re
 import shlex
 from dataclasses import dataclass, field
 
-from terminal_agent.errors import BlockedCommandError
+from terminal_agent.errors import BlockedCommandError, JailEscapeError
 from terminal_agent.executor import ExecResult, SandboxedExecutor
 
 
@@ -16,12 +16,19 @@ def suggest_fix(command: str, stderr: str) -> str | None:
     Heuristics (deterministic, testable, no LLM required):
     - ``python`` not found / bare python -> ``python3``
     - ``cat``/``head``/``tail`` on a missing file -> create it, then retry
-    - missing directory for ``mkdir`` without -p is already idempotent-safe
     - typo ``ehco`` -> ``echo``, ``sl`` -> ``ls``, ``cta`` -> ``cat``
-    - missing file for other readers -> ``touch`` it first via ``&&``
+    - ``ls`` on a missing directory -> ``mkdir -p`` it, then retry
+
+    Multi-step fixes are joined with ``&&`` as a *plan notation only*;
+    the loop splits them and executes each step separately (no shell).
+    Unparseable commands (e.g. unbalanced quotes) yield None, never a
+    crash.
     """
     low = stderr.lower()
-    tokens = shlex.split(command) if command.strip() else []
+    try:
+        tokens = shlex.split(command) if command.strip() else []
+    except ValueError:
+        return None
     if not tokens:
         return None
     typo = {"ehco": "echo", "sl": "ls", "cta": "cat", "prnt": "printf"}
@@ -30,14 +37,19 @@ def suggest_fix(command: str, stderr: str) -> str | None:
     if tokens[0] == "python":
         # Prefer python3 whenever the failing executable is bare python.
         return shlex.join(["python3", *tokens[1:]])
-    missing = re.search(r"(?:no such file or directory|not found)[:\s]*([^\n]*)", low)
     if "no such file" in low and tokens[0] in {"cat", "head", "tail"} and len(tokens) >= 2:
         target = tokens[-1]
         return f"touch {shlex.quote(target)} && {command}"
+    missing = re.search(r"(?:no such file or directory|not found)[:\s]*([^\n]*)", low)
     if missing and tokens[0] == "ls" and len(tokens) >= 2:
         target = tokens[-1]
         return f"mkdir -p {shlex.quote(target)} && {command}"
     return None
+
+
+def _split_steps(fix: str) -> list[str]:
+    """Split a fix plan into individually executable steps."""
+    return [step.strip() for step in fix.split(" && ") if step.strip()]
 
 
 @dataclass
@@ -48,6 +60,7 @@ class DebugOutcome:
     attempts: int
     final_command: str
     history: list[ExecResult] = field(default_factory=list)
+    dry_run: bool = False
 
     @property
     def final(self) -> ExecResult | None:
@@ -63,23 +76,47 @@ class SelfDebugLoop:
         self.max_retries = max_retries
 
     def run(self, command: str, dry_run: bool = False) -> DebugOutcome:
-        """Run, fix and retry until success or retries are exhausted."""
-        history: list[ExecResult] = []
-        current = command
-        for attempt in range(1, self.max_retries + 2):
+        """Run, fix and retry until success or retries are exhausted.
+
+        In dry-run mode nothing is executed: the command is only
+        policy-validated and the outcome's ``success`` stays False —
+        a dry run never claims a task succeeded.
+        """
+        if dry_run:
             try:
-                result = self.executor.run(current, attempt=attempt, dry_run=dry_run)
+                result = self.executor.run(command, attempt=1, dry_run=True)
+                return DebugOutcome(False, 1, command, [result], dry_run=True)
+            except (BlockedCommandError, JailEscapeError) as exc:
+                failed = ExecResult(command, 126, "", str(exc), 0.0)
+                return DebugOutcome(False, 1, command, [failed], dry_run=True)
+        history: list[ExecResult] = []
+        queue: list[str] = [command]
+        current = command
+        while queue and len(history) <= self.max_retries:
+            current = queue.pop(0)
+            attempt = len(history) + 1
+            try:
+                result = self.executor.run(current, attempt=attempt)
+            except JailEscapeError as exc:
+                # A jail escape is a hard stop: no heuristic may "fix" it.
+                history.append(ExecResult(current, 126, "", str(exc), 0.0))
+                break
             except BlockedCommandError as exc:
                 # A policy block on a typo'd command is exactly what the
                 # fixer is for: synthesise a failed result and try a fix.
                 # Genuinely dangerous commands have no fix and will break.
                 result = ExecResult(current, 127, "", f"command not found: {exc}", 0.0)
             history.append(result)
-            if result.ok or dry_run:
-                return DebugOutcome(True, attempt, current, history)
-            fix = suggest_fix(current, result.stderr or result.stdout)
-            if fix is None or fix == current:
+            if result.ok:
+                continue
+            if len(history) > self.max_retries:
                 break
-            current = fix
-        last_ok = bool(history and history[-1].ok)
-        return DebugOutcome(last_ok, len(history), current, history)
+            fix = suggest_fix(current, result.stderr or result.stdout)
+            if fix is None:
+                break
+            steps = _split_steps(fix)
+            if steps == [current]:
+                break
+            queue = steps + queue
+        success = bool(history) and not queue and history[-1].ok
+        return DebugOutcome(success, len(history), current, history)
